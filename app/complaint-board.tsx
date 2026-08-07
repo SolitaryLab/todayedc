@@ -41,7 +41,10 @@ export function ComplaintBoard() {
     const res = await fetch("/api/complaints", { cache: "no-store" });
     const data = await res.json() as { items: Complaint[] };
     setItems(data.items);
-    setSelected((current) => current || data.items[0]?.date || "");
+    setSelected((current) => {
+      const available = data.items.flatMap((item) => datesBetween(item.date, item.endDate));
+      return current && available.includes(current) ? current : data.items[0]?.date || "";
+    });
     setLoading(false);
   }, []);
 
@@ -119,7 +122,7 @@ export function ComplaintBoard() {
         <div className="date-rail">
           <p className="section-label">날짜 선택</p>
           <div className="date-list">
-            {dates.map((date) => <button className={selected === date ? "date active" : "date"} onClick={() => setSelected(date)} key={date}><span>{displayDate(date)}</span><b>{items.filter((i) => i.date === date).length}</b></button>)}
+            {dates.map((date) => <button className={selected === date ? "date active" : "date"} onClick={() => setSelected(date)} key={date}><span>{displayDate(date)}</span><b>{items.filter((item) => date >= item.date && date <= (item.endDate || item.date)).length}</b></button>)}
           </div>
         </div>
 
@@ -134,7 +137,7 @@ export function ComplaintBoard() {
               <CopyField label="제목" value={item.title} copyKey={`${item.id}-title`} copied={copied} onCopy={copy} />
               <CopyField label="내용" value={item.content} copyKey={`${item.id}-content`} copied={copied} onCopy={copy} multiline />
               <CopyField label="처리기관" value={item.agency} copyKey={`${item.id}-agency`} copied={copied} onCopy={copy} />
-              {item.images && item.images.length > 0 && <div className="complaint-images">{item.images.map((image, imageIndex) => <a href={image.url} target="_blank" rel="noreferrer" key={image.url}><img src={image.url} alt={`${item.title} 첨부사진 ${imageIndex + 1}`} /></a>)}</div>}
+              {item.images && item.images.length > 0 && <div className="complaint-images">{item.images.map((image, imageIndex) => { const imageSrc = `/api/images?url=${encodeURIComponent(image.url)}`; return <a href={imageSrc} target="_blank" rel="noreferrer" key={image.url}><img src={imageSrc} alt={`${item.title} 첨부사진 ${imageIndex + 1}`} /></a>; })}</div>}
               {authenticated && <div className="admin-actions"><button onClick={() => { setEditing(item.id); setDraft({ ...item, usePeriod: Boolean(item.endDate) }); setAdminOpen(true); }}>수정</button><button className="danger" disabled={busy} onClick={() => remove(item.id)}>삭제</button></div>}
             </article>
           ))}
@@ -150,7 +153,7 @@ export function ComplaintBoard() {
           <label>제목<input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="민원 제목을 입력하세요" required /></label><label>내용<textarea rows={7} value={draft.content} onChange={(e) => setDraft({ ...draft, content: e.target.value })} placeholder="복사해 사용할 민원 내용을 입력하세요" required /></label>
           <label>처리기관<input value={draft.agency} onChange={(e) => setDraft({ ...draft, agency: e.target.value })} placeholder="처리기관을 입력하거나 아래에서 선택하세요" required /></label><div className="agency-chips" aria-label="자주 쓰는 처리기관">{agencies.map((agency) => <button type="button" className={draft.agency === agency ? "active" : ""} onClick={() => setDraft({ ...draft, agency })} key={agency}>{agency}</button>)}</div>
           <label className="photo-upload">첨부사진 <small>선택사항 · 최대 2장 · 장당 4MB</small><input type="file" accept="image/*" multiple onChange={(e) => { const next = Array.from(e.target.files || []).slice(0, Math.max(0, 2 - (draft.images?.length || 0))); setPhotoFiles(next); }} /></label>
-          {(draft.images?.length || photoFiles.length > 0) && <div className="photo-preview">{(draft.images || []).map((image) => <div key={image.url}><img src={image.url} alt="기존 첨부사진" /><button type="button" onClick={() => setDraft({ ...draft, images: (draft.images || []).filter((item) => item.url !== image.url) })}>사진 제외</button></div>)}{photoFiles.map((file) => <div key={`${file.name}-${file.lastModified}`}><span>{file.name}</span></div>)}</div>}
+          {((draft.images?.length || 0) + photoFiles.length > 0) && <div className="photo-preview">{(draft.images || []).map((image) => <div key={image.url}><img src={`/api/images?url=${encodeURIComponent(image.url)}`} alt="기존 첨부사진" /><button type="button" onClick={() => setDraft({ ...draft, images: (draft.images || []).filter((item) => item.url !== image.url) })}>사진 제외</button></div>)}{photoFiles.map((file) => <div key={`${file.name}-${file.lastModified}`}><span>{file.name}</span></div>)}</div>}
           <p className="photo-note">첨부사진은 저장 공간 절약을 위해 업로드 10일 후 자동 삭제됩니다.</p>
           {message && <p className={message.includes("않") ? "form-message error" : "form-message"} role="status">{message}</p>}<div className="form-buttons"><button className="primary" disabled={busy} type="submit">{busy ? "처리 중…" : editing ? "수정 저장" : "민원 등록"}</button>{editing && <button type="button" onClick={() => { setEditing(null); setDraft(emptyDraft()); }}>취소</button>}</div></form></>}
       </section></div>}
