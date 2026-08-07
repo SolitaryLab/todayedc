@@ -2,10 +2,23 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-type Complaint = { id: string; date: string; title: string; content: string; agency: string };
-type Draft = Omit<Complaint, "id">;
+type Complaint = { id: string; category: "focus" | "general"; date: string; endDate?: string; title: string; content: string; agency: string; images?: Array<{ url: string; uploadedAt: string }> };
+type Draft = Omit<Complaint, "id"> & { usePeriod: boolean };
 
-const emptyDraft = (): Draft => ({ date: new Date().toISOString().slice(0, 10), title: "", content: "", agency: "" });
+const agencies = ["부산강서구", "수자원공사", "부산도시공사", "부산광역시", "기후에너지환경부"];
+const emptyDraft = (): Draft => ({ category: "general", date: new Date().toISOString().slice(0, 10), endDate: "", usePeriod: false, title: "", content: "", agency: "", images: [] });
+
+function datesBetween(start: string, end?: string) {
+  const dates: string[] = [];
+  const last = end || start;
+  const cursor = new Date(`${start}T12:00:00`);
+  const limit = new Date(`${last}T12:00:00`);
+  while (cursor <= limit && dates.length < 366) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
+}
 
 function displayDate(date: string) {
   return new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", weekday: "short" }).format(new Date(`${date}T12:00:00`));
@@ -22,6 +35,7 @@ export function ComplaintBoard() {
   const [draft, setDraft] = useState<Draft>(emptyDraft());
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [photoFiles, setPhotoFiles] = useState<File[]>([]);
 
   const load = useCallback(async () => {
     const res = await fetch("/api/complaints", { cache: "no-store" });
@@ -34,8 +48,8 @@ export function ComplaintBoard() {
   useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
   useEffect(() => { fetch("/api/auth").then((r) => setAuthenticated(r.ok)).catch(() => null); }, []);
 
-  const dates = useMemo(() => [...new Set(items.map((item) => item.date))], [items]);
-  const visible = items.filter((item) => item.date === selected);
+  const dates = useMemo(() => [...new Set(items.flatMap((item) => datesBetween(item.date, item.endDate)))].sort((a, b) => b.localeCompare(a)), [items]);
+  const visible = items.filter((item) => selected >= item.date && selected <= (item.endDate || item.date));
 
   async function copy(value: string, key: string) {
     await navigator.clipboard.writeText(value);
@@ -55,9 +69,19 @@ export function ComplaintBoard() {
     event.preventDefault();
     setBusy(true);
     try {
-      const res = await fetch("/api/complaints", { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(editing ? { ...draft, id: editing } : draft) });
+      let images = draft.images || [];
+      if (photoFiles.length) {
+        const form = new FormData();
+        photoFiles.forEach((file) => form.append("images", file));
+        const uploadRes = await fetch("/api/uploads", { method: "POST", body: form });
+        if (!uploadRes.ok) { setMessage("사진을 업로드하지 못했습니다. 파일 크기와 저장 공간을 확인해 주세요."); return; }
+        const uploaded = await uploadRes.json() as { images: Array<{ url: string; uploadedAt: string }> };
+        images = [...images, ...uploaded.images].slice(0, 2);
+      }
+      const payload = { ...draft, images, endDate: draft.usePeriod ? draft.endDate : undefined };
+      const res = await fetch("/api/complaints", { method: editing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(editing ? { ...payload, id: editing } : payload) });
       if (!res.ok) { setMessage("저장 공간 연결을 확인해 주세요. 저장되지 않았습니다."); return; }
-      setEditing(null); setDraft(emptyDraft()); setMessage("저장되었습니다."); await load();
+      setEditing(null); setDraft(emptyDraft()); setPhotoFiles([]); setMessage("저장되었습니다."); await load();
     } finally { setBusy(false); }
   }
 
@@ -106,10 +130,12 @@ export function ComplaintBoard() {
           {visible.map((item, index) => (
             <article className="complaint-card" key={item.id}>
               <div className="card-number">{String(index + 1).padStart(2, "0")}</div>
+              <div className={item.category === "focus" ? "category focus" : "category general"}>{item.category === "focus" ? "집중민원" : "일반민원"}{item.endDate && <span>{displayDate(item.date)} ~ {displayDate(item.endDate)}</span>}</div>
               <CopyField label="제목" value={item.title} copyKey={`${item.id}-title`} copied={copied} onCopy={copy} />
               <CopyField label="내용" value={item.content} copyKey={`${item.id}-content`} copied={copied} onCopy={copy} multiline />
               <CopyField label="처리기관" value={item.agency} copyKey={`${item.id}-agency`} copied={copied} onCopy={copy} />
-              {authenticated && <div className="admin-actions"><button onClick={() => { setEditing(item.id); setDraft(item); setAdminOpen(true); }}>수정</button><button className="danger" disabled={busy} onClick={() => remove(item.id)}>삭제</button></div>}
+              {item.images && item.images.length > 0 && <div className="complaint-images">{item.images.map((image, imageIndex) => <a href={image.url} target="_blank" rel="noreferrer" key={image.url}><img src={image.url} alt={`${item.title} 첨부사진 ${imageIndex + 1}`} /></a>)}</div>}
+              {authenticated && <div className="admin-actions"><button onClick={() => { setEditing(item.id); setDraft({ ...item, usePeriod: Boolean(item.endDate) }); setAdminOpen(true); }}>수정</button><button className="danger" disabled={busy} onClick={() => remove(item.id)}>삭제</button></div>}
             </article>
           ))}
         </div>
@@ -117,7 +143,16 @@ export function ComplaintBoard() {
 
       <button className="admin-trigger" onClick={() => setAdminOpen(true)}><span>●</span> 관리자 {authenticated ? "메뉴" : "로그인"}</button>
       {adminOpen && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setAdminOpen(false); }}><section className="admin-modal" role="dialog" aria-modal="true" aria-labelledby="admin-title"><button className="close" onClick={() => setAdminOpen(false)} aria-label="닫기">×</button>
-        {!authenticated ? <><p className="eyebrow">ADMIN</p><h2 id="admin-title">관리자 로그인</h2><p className="modal-copy">민원을 등록하고 관리하려면 로그인해 주세요.</p><form onSubmit={login} className="admin-form"><label>아이디<input name="username" autoComplete="username" required /></label><label>비밀번호<input name="password" type="password" autoComplete="current-password" required /></label>{message && <p className="form-message error" role="alert">{message}</p>}<button className="primary" type="submit">로그인</button></form></> : <><div className="admin-heading"><div><p className="eyebrow">ADMIN</p><h2 id="admin-title">{editing ? "민원 수정" : "새 민원 등록"}</h2></div><span>관리자 모드</span></div><form onSubmit={save} className="admin-form"><label>날짜<input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} required /></label><label>제목<input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="민원 제목을 입력하세요" required /></label><label>내용<textarea rows={7} value={draft.content} onChange={(e) => setDraft({ ...draft, content: e.target.value })} placeholder="복사해 사용할 민원 내용을 입력하세요" required /></label><label>처리기관<input value={draft.agency} onChange={(e) => setDraft({ ...draft, agency: e.target.value })} placeholder="예: 관할 구청 교통행정과" required /></label>{message && <p className={message.includes("않") ? "form-message error" : "form-message"} role="status">{message}</p>}<div className="form-buttons"><button className="primary" disabled={busy} type="submit">{busy ? "처리 중…" : editing ? "수정 저장" : "민원 등록"}</button>{editing && <button type="button" onClick={() => { setEditing(null); setDraft(emptyDraft()); }}>취소</button>}</div></form></>}
+        {!authenticated ? <><p className="eyebrow">ADMIN</p><h2 id="admin-title">관리자 로그인</h2><p className="modal-copy">민원을 등록하고 관리하려면 로그인해 주세요.</p><form onSubmit={login} className="admin-form"><label>아이디<input name="username" autoComplete="username" required /></label><label>비밀번호<input name="password" type="password" autoComplete="current-password" required /></label>{message && <p className="form-message error" role="alert">{message}</p>}<button className="primary" type="submit">로그인</button></form></> : <><div className="admin-heading"><div><p className="eyebrow">ADMIN</p><h2 id="admin-title">{editing ? "민원 수정" : "새 민원 등록"}</h2></div><span>관리자 모드</span></div><form onSubmit={save} className="admin-form">
+          <fieldset className="category-picker"><legend>민원 구분</legend><div><button type="button" className={draft.category === "focus" ? "active" : ""} onClick={() => setDraft({ ...draft, category: "focus" })}>집중민원</button><button type="button" className={draft.category === "general" ? "active" : ""} onClick={() => setDraft({ ...draft, category: "general" })}>일반민원</button></div></fieldset>
+          <div className="date-row"><label>{draft.usePeriod ? "시작일" : "노출 날짜"}<input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value, endDate: draft.endDate && draft.endDate >= e.target.value ? draft.endDate : e.target.value })} required /></label>{draft.usePeriod && <label>종료일<input type="date" min={draft.date} value={draft.endDate} onChange={(e) => setDraft({ ...draft, endDate: e.target.value })} required /></label>}</div>
+          <label className="period-check"><input type="checkbox" checked={draft.usePeriod} onChange={(e) => setDraft({ ...draft, usePeriod: e.target.checked, endDate: e.target.checked ? (draft.endDate || draft.date) : "" })} /><span>기간 설정</span><small>선택한 기간의 모든 날짜에 노출합니다</small></label>
+          <label>제목<input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="민원 제목을 입력하세요" required /></label><label>내용<textarea rows={7} value={draft.content} onChange={(e) => setDraft({ ...draft, content: e.target.value })} placeholder="복사해 사용할 민원 내용을 입력하세요" required /></label>
+          <label>처리기관<input value={draft.agency} onChange={(e) => setDraft({ ...draft, agency: e.target.value })} placeholder="처리기관을 입력하거나 아래에서 선택하세요" required /></label><div className="agency-chips" aria-label="자주 쓰는 처리기관">{agencies.map((agency) => <button type="button" className={draft.agency === agency ? "active" : ""} onClick={() => setDraft({ ...draft, agency })} key={agency}>{agency}</button>)}</div>
+          <label className="photo-upload">첨부사진 <small>선택사항 · 최대 2장 · 장당 4MB</small><input type="file" accept="image/*" multiple onChange={(e) => { const next = Array.from(e.target.files || []).slice(0, Math.max(0, 2 - (draft.images?.length || 0))); setPhotoFiles(next); }} /></label>
+          {(draft.images?.length || photoFiles.length > 0) && <div className="photo-preview">{(draft.images || []).map((image) => <div key={image.url}><img src={image.url} alt="기존 첨부사진" /><button type="button" onClick={() => setDraft({ ...draft, images: (draft.images || []).filter((item) => item.url !== image.url) })}>사진 제외</button></div>)}{photoFiles.map((file) => <div key={`${file.name}-${file.lastModified}`}><span>{file.name}</span></div>)}</div>}
+          <p className="photo-note">첨부사진은 저장 공간 절약을 위해 업로드 10일 후 자동 삭제됩니다.</p>
+          {message && <p className={message.includes("않") ? "form-message error" : "form-message"} role="status">{message}</p>}<div className="form-buttons"><button className="primary" disabled={busy} type="submit">{busy ? "처리 중…" : editing ? "수정 저장" : "민원 등록"}</button>{editing && <button type="button" onClick={() => { setEditing(null); setDraft(emptyDraft()); }}>취소</button>}</div></form></>}
       </section></div>}
       <footer><span>오늘의민원</span><p>더 나은 우리 동네를 위한 작은 목소리</p><p>© 2026 Today’s Minwon</p></footer>
     </main>
