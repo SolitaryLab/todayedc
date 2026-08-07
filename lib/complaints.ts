@@ -8,6 +8,9 @@ export type Complaint = {
   title: string;
   content: string;
   agency: string;
+  createdAt: string;
+  createdBy: string;
+  author: string;
   images?: Array<{ url: string; uploadedAt: string }>;
 };
 const pathname = "data/complaints.json";
@@ -20,7 +23,8 @@ export async function readComplaints() {
   if (!blob) { await writeComplaints(initial); return initial; }
   const response = await get(blob.url, { access: "private", useCache: false });
   if (!response || response.statusCode !== 200) return initial;
-  const items = JSON.parse(await new Response(response.stream).text()) as Complaint[];
+  const stored = JSON.parse(await new Response(response.stream).text()) as Array<Partial<Complaint>>;
+  const items = stored.map((item) => ({ ...item, createdAt: item.createdAt || `${item.date || "2026-01-01"}T00:00:00.000Z`, createdBy: item.createdBy || "edcminwon", author: item.author || "민원" })) as Complaint[];
   const expiresAt = Date.now() - 10 * 24 * 60 * 60 * 1000;
   const expiredUrls = items.flatMap((item) => item.images || []).filter((image) => new Date(image.uploadedAt).getTime() < expiresAt).map((image) => image.url);
   if (expiredUrls.length) {

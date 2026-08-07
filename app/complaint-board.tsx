@@ -2,10 +2,10 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-type Complaint = { id: string; category: "focus" | "general"; date: string; endDate?: string; title: string; content: string; agency: string; images?: Array<{ url: string; uploadedAt: string }> };
-type Draft = Omit<Complaint, "id"> & { usePeriod: boolean };
+type Complaint = { id: string; category: "focus" | "general"; date: string; endDate?: string; title: string; content: string; agency: string; createdAt: string; author: string; canEdit?: boolean; images?: Array<{ url: string; uploadedAt: string }> };
+type Draft = Omit<Complaint, "id" | "createdAt" | "author" | "canEdit"> & { usePeriod: boolean };
 
-const agencies = ["부산강서구", "수자원공사", "부산도시공사", "부산광역시", "기후에너지환경부"];
+const agencies = ["부산광역시 강서구", "수자원공사", "부산도시공사", "부산광역시", "기후에너지환경부", "국민권익위원회", "경찰청", "부산강서경찰서", "국토교통부", "국가유산청"];
 const emptyDraft = (): Draft => ({ category: "general", date: new Date().toISOString().slice(0, 10), endDate: "", usePeriod: false, title: "", content: "", agency: "", images: [] });
 
 function datesBetween(start: string, end?: string) {
@@ -24,6 +24,10 @@ function displayDate(date: string) {
   return new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", weekday: "short" }).format(new Date(`${date}T12:00:00`));
 }
 
+function displayCreatedAt(value: string) {
+  return new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
+}
+
 export function ComplaintBoard() {
   const [items, setItems] = useState<Complaint[]>([]);
   const [selected, setSelected] = useState("");
@@ -36,6 +40,8 @@ export function ComplaintBoard() {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [photoFiles, setPhotoFiles] = useState<File[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [completed, setCompleted] = useState<Record<string, string[]>>({});
 
   const load = useCallback(async () => {
     const res = await fetch("/api/complaints", { cache: "no-store" });
@@ -50,6 +56,7 @@ export function ComplaintBoard() {
 
   useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
   useEffect(() => { fetch("/api/auth").then((r) => setAuthenticated(r.ok)).catch(() => null); }, []);
+  useEffect(() => { try { setCompleted(JSON.parse(localStorage.getItem("todayedc-completed") || "{}")); } catch { setCompleted({}); } }, []);
 
   const dates = useMemo(() => [...new Set(items.flatMap((item) => datesBetween(item.date, item.endDate)))].sort((a, b) => b.localeCompare(a)), [items]);
   const visible = items.filter((item) => selected >= item.date && selected <= (item.endDate || item.date));
@@ -57,6 +64,15 @@ export function ComplaintBoard() {
   async function copy(value: string, key: string) {
     await navigator.clipboard.writeText(value);
     setCopied(key);
+    const separator = key.lastIndexOf("-");
+    const id = key.slice(0, separator);
+    const field = key.slice(separator + 1);
+    setCompleted((current) => {
+      const fields = [...new Set([...(current[id] || []), field])];
+      const next = { ...current, [id]: fields };
+      localStorage.setItem("todayedc-completed", JSON.stringify(next));
+      return next;
+    });
     window.setTimeout(() => setCopied(""), 1500);
   }
 
@@ -64,7 +80,7 @@ export function ComplaintBoard() {
     event.preventDefault();
     const values = new FormData(event.currentTarget);
     const res = await fetch("/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: values.get("username"), password: values.get("password") }) });
-    if (res.ok) { setAuthenticated(true); setMessage(""); }
+    if (res.ok) { setAuthenticated(true); setMessage(""); await load(); }
     else setMessage("아이디 또는 비밀번호를 확인해 주세요.");
   }
 
@@ -131,14 +147,12 @@ export function ComplaintBoard() {
           {loading && <div className="empty">민원 내용을 불러오고 있습니다.</div>}
           {!loading && visible.length === 0 && <div className="empty"><span>✓</span><h3>현재 등록된 민원이 없습니다</h3><p>새로운 민원이 올라오면 이곳에서 바로 확인할 수 있어요.</p>{authenticated && <button className="empty-add" onClick={() => setAdminOpen(true)}>첫 민원 등록하기</button>}</div>}
           {visible.map((item, index) => (
-            <article className="complaint-card" key={item.id}>
+            <article className={`complaint-card ${expanded.has(item.id) ? "expanded" : "collapsed"}`} key={item.id}>
               <div className="card-number">{String(index + 1).padStart(2, "0")}</div>
-              <div className={item.category === "focus" ? "category focus" : "category general"}>{item.category === "focus" ? "집중민원" : "일반민원"}{item.endDate && <span>{displayDate(item.date)} ~ {displayDate(item.endDate)}</span>}</div>
-              <CopyField label="제목" value={item.title} copyKey={`${item.id}-title`} copied={copied} onCopy={copy} />
-              <CopyField label="내용" value={item.content} copyKey={`${item.id}-content`} copied={copied} onCopy={copy} multiline />
-              <CopyField label="처리기관" value={item.agency} copyKey={`${item.id}-agency`} copied={copied} onCopy={copy} />
+              <div className="complaint-summary"><div><div className={item.category === "focus" ? "category focus" : "category general"}>{item.category === "focus" ? "집중민원" : "일반민원"}{item.endDate && <span>{displayDate(item.date)} ~ {displayDate(item.endDate)}</span>}</div><button className="complaint-title" onClick={() => setExpanded((current) => { const next=new Set(current); next.has(item.id) ? next.delete(item.id) : next.add(item.id); return next; })} aria-expanded={expanded.has(item.id)}><span>{item.title}</span><b>{expanded.has(item.id) ? "접기" : "보기"}⌄</b></button><p className="complaint-meta">작성일 {displayCreatedAt(item.createdAt)} · 작성자 {item.author}</p></div>{(completed[item.id] || []).length === 3 && <span className="completed-badge">민원완료 ✓</span>}</div>
+              {expanded.has(item.id) && <div className="complaint-details"><CopyField label="제목" value={item.title} copyKey={`${item.id}-title`} copied={copied} onCopy={copy} /><CopyField label="내용" value={item.content} copyKey={`${item.id}-content`} copied={copied} onCopy={copy} multiline /><CopyField label="처리기관" value={item.agency} copyKey={`${item.id}-agency`} copied={copied} onCopy={copy} />
               {item.images && item.images.length > 0 && <div className="complaint-images">{item.images.map((image, imageIndex) => { const imageSrc = `/api/images?url=${encodeURIComponent(image.url)}`; return <a href={imageSrc} target="_blank" rel="noreferrer" key={image.url}><img src={imageSrc} alt={`${item.title} 첨부사진 ${imageIndex + 1}`} /></a>; })}</div>}
-              {authenticated && <div className="admin-actions"><button onClick={() => { setEditing(item.id); setDraft({ ...item, usePeriod: Boolean(item.endDate) }); setAdminOpen(true); }}>수정</button><button className="danger" disabled={busy} onClick={() => remove(item.id)}>삭제</button></div>}
+              {item.canEdit && <div className="admin-actions"><button onClick={() => { setEditing(item.id); setDraft({ category:item.category, date:item.date, endDate:item.endDate, title:item.title, content:item.content, agency:item.agency, images:item.images, usePeriod:Boolean(item.endDate) }); setAdminOpen(true); }}>수정</button><button className="danger" disabled={busy} onClick={() => remove(item.id)}>삭제</button></div>}</div>}
             </article>
           ))}
         </div>
