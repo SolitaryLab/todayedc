@@ -23,4 +23,10 @@ export async function getAdminUsername() {
 export async function isAdmin() { return Boolean(await getAdminUsername()); }
 export async function setAdminCookie(username: string) { (await cookies()).set(cookieName, `${username}.${signature(username)}`, { httpOnly:true, secure:process.env.NODE_ENV === "production", sameSite:"strict", maxAge:60*60*8, path:"/" }); }
 export function validCredentials(username: string, password: string) { return accounts().some((admin) => username === admin.username && password === admin.password); }
-export function authorName(username: string) { return username === "edcdelta" ? "DELTA" : "민원"; }
+const authorNames: Record<string, string> = {
+  edcdelta: "DELTA",
+  edccafetour: "카페투어",
+  edcnickname: "닉네임",
+  edcstarlink: "Starlink",
+};
+export function authorName(username: string) { return authorNames[username] || username; }
